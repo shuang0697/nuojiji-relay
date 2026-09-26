@@ -126,11 +126,11 @@ export function createApp() {
         const id = makeMessageId(requestId);
         let item;
         try {
-            const content = await runGeneration(settings, messages, maxTokens);
+            const { content, reasoning } = await runGeneration(settings, messages, maxTokens);
             item = {
                 id, requestId,
                 charId: meta?.charId ?? null, roundId: meta?.roundId ?? null, userId: meta?.userId ?? null,
-                content, error: null, createdAt: nowMs(),
+                content, reasoning: reasoning || null, error: null, createdAt: nowMs(),
             };
         } catch (e) {
             item = {

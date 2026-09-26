@@ -8,17 +8,25 @@ import { shouldFire, shouldFireInterval, resolveLocalHour } from './impulseEngin
 import { runGeneration } from '../ai/aiCaller.js';
 import { dispatchPush } from '../push/pushSender.js';
 import { nowMs, extractPushBodies } from '../util/ids.js';
-import { renderTimeTokens } from '../util/timeTokens.js';
+import { renderTimeTokens, messageStamp } from '../util/timeTokens.js';
 import { buildMemoryContext } from './mcpContext.js';
 import { runProactiveToolLoop } from './proactiveToolPrefetch.js';
 
 // 把滑窗消息渲染成转录文本（喂进 promptTemplate 的 {{RECENT_MESSAGES}}）
-function renderTranscript(recentMessages) {
+// 🧭 誰 / 何時：用真名（角色標 (you)）+ 時間章（關閉時間感知不帶；自定義時間帶劇情時間）。
+//    過去只有「User: / Char:」且無時間 → 角色分不清誰說的、哪天說的。舊手機端沒帶名字 → 退回 User / Char。
+//    旁白 / 通話回顧等特殊氣泡標出來，別被當成某一方的台詞。
+export function renderTranscript(recentMessages, timeSpec = null) {
     if (!Array.isArray(recentMessages) || recentMessages.length === 0) return '(no recent messages)';
+    const userName = timeSpec?.userName || 'User';
+    const charName = timeSpec?.charName ? `${timeSpec.charName}(you)` : 'Char';
     return recentMessages.map((m) => {
-        const who = (m.sender === 'me' || m.role === 'user') ? 'User' : 'Char';
-        const text = m.text || m.content || '';
-        return `${who}: ${text}`;
+        const isUser = m.sender === 'me' || m.role === 'user';
+        const who = isUser ? userName : charName;
+        let text = m.text || m.content || m.voiceText || '';
+        if (m.type === 'state') text = `〈narration — a description, not a spoken line〉${text}`;
+        const stamp = messageStamp(m, timeSpec);
+        return `${stamp}${who}: ${text}`;
     }).join('\n');
 }
 
@@ -201,7 +209,7 @@ export async function runProactiveTick(env) {
             if (!inboxClaimed) continue;
 
             // 命中 → 实时生成。messages 只有一条 system（手机端拼好的完整 prompt + 填充滑窗）
-            let transcript = renderTranscript(rec.recentMessages);
+            let transcript = renderTranscript(rec.recentMessages, rec.timeSpec);
             // 🧠 直连第三方记忆 MCP 检索（关软件也能用最新记忆）；失败/无配置 → 空串不阻断生成。
             let memory = '';
             try {
@@ -239,9 +247,9 @@ export async function runProactiveTick(env) {
                 { role: 'user', content: '请开始回复。' },
             ];
 
-            let content = null, error = null;
+            let content = null, reasoning = null, error = null;
             try {
-                content = await runGeneration(rec.aiSettings, messages, rec.aiSettings?.maxTokens || null);
+                ({ content, reasoning } = await runGeneration(rec.aiSettings, messages, rec.aiSettings?.maxTokens || null));
             } catch (e) {
                 error = String(e?.message || e);
             }
@@ -264,7 +272,7 @@ export async function runProactiveTick(env) {
             const item = {
                 id: `relay_${requestId}`, requestId,
                 charId: rec.charId, userId: rec.userId,
-                roundId: requestId, content, error, createdAt: nowMs(),
+                roundId: requestId, content, reasoning: reasoning || null, error, createdAt: nowMs(),
                 proactive: true,
             };
             await outbox.put(rec.inboxId, item);

@@ -1,10 +1,19 @@
 // 服务端 AI 调用 —— 复刻 APP 本地路径的非流式行为（含主→副 fallback、429 退避）。
 // 永远 stream:false（中继不需要流式，结果整条进 outbox）。
 
-import { getApiConfig } from './apiConfigs.js';
+import { getApiConfig, extractStreamReasoning, extractReasoning } from './apiConfigs.js';
 import { buildChatEndpoint, buildApiHeaders, buildChatRequestBody, assertSafeApiUrl } from './requestBuilder.js';
 
 const REQUEST_TIMEOUT_MS = 180_000;
+// 原生推理可能很长（数万字），outbox 存储有体积上限 → 封顶；手机端只用于思维链面板展示
+const REASONING_CAP = 20_000;
+
+function capReasoning(text) {
+    if (typeof text !== 'string') return null;
+    const t = text.trim();
+    if (!t) return null;
+    return t.length > REASONING_CAP ? t.slice(0, REASONING_CAP) + '…' : t;
+}
 
 async function callOnce({ apiUrl, apiKey, model, apiType, messages, temperature, reasoningEffort, maxTokens }) {
     assertSafeApiUrl(apiUrl);
@@ -50,14 +59,15 @@ async function callOnce({ apiUrl, apiKey, model, apiType, messages, temperature,
                 err.detail = typeof data === 'string' ? data.slice(0, 300) : JSON.stringify(data).slice(0, 300);
                 throw err;
             }
-            return content;
+            return { content, reasoning: capReasoning(extractReasoning(data)) };
         }
 
-        // SSE 流式：逐行读 data:，累积 delta
+        // SSE 流式：逐行读 data:，累积 delta（正文 + 原生推理分开累积）
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
         let buffer = '';
         let content = '';
+        let reasoning = '';
         while (true) {
             const { done, value } = await reader.read();
             if (done) break;
@@ -73,6 +83,8 @@ async function callOnce({ apiUrl, apiKey, model, apiType, messages, temperature,
                 try { json = JSON.parse(payload); } catch { continue; }
                 const delta = config.extractStreamDelta(json);
                 if (delta) content += delta;
+                const rDelta = extractStreamReasoning(json);
+                if (rDelta) reasoning += rDelta;
             }
         }
         if (!content || !content.trim()) {
@@ -80,7 +92,7 @@ async function callOnce({ apiUrl, apiKey, model, apiType, messages, temperature,
             err.status = res.status;
             throw err;
         }
-        return content;
+        return { content, reasoning: capReasoning(reasoning) };
     } finally {
         clearTimeout(timer);
     }
@@ -90,7 +102,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /**
  * 跑一次完整生成：主 API（带 429 退避重试）→ 失败且开了副 API fallback → 副 API。
- * @returns {Promise<string>} 原始模型文本（含 tag，手机端解析）
+ * @returns {Promise<{content:string, reasoning:string|null}>} 原始模型文本（含 tag，手机端解析）+ 原生推理
  */
 export async function runGeneration(settings, messages, maxTokens) {
     const {
