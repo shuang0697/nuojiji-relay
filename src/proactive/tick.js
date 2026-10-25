@@ -11,6 +11,8 @@ import { nowMs, extractPushBodies } from '../util/ids.js';
 import { renderTimeTokens, messageStamp } from '../util/timeTokens.js';
 import { buildMemoryContext } from './mcpContext.js';
 import { runProactiveToolLoop } from './proactiveToolPrefetch.js';
+import { createKvStore } from '../store/kvStore.js';
+import { readTickMinutes, DEFAULT_TICK_MINUTES } from './tickConfig.js';
 
 // 把滑窗消息渲染成转录文本（喂进 promptTemplate 的 {{RECENT_MESSAGES}}）
 // 🧭 誰 / 何時：用真名（角色標 (you)）+ 時間章（關閉時間感知不帶；自定義時間帶劇情時間）。
@@ -55,19 +57,20 @@ const INBOX_SLOT_CHAR = 'inbox';
 const STALE_RECORD_MS = 7 * 24 * 60 * 60 * 1000;
 
 // ⏱️ 可调检测间隔：cron 表达式固定每分钟触发（Workers 的 crons 不能读环境变量），
-//    由 PROACTIVE_TICK_MINUTES（默认 1）决定实际几分钟检测一次，其余分钟直接跳过（零读零写）。
-//    想省 KV 额度 / 减少空转的用户在 CF 面板加变量 PROACTIVE_TICK_MINUTES=5 即可，不用改代码。
-//    后端冷却本来就 20 分钟，3~5 分钟检测一次对体感几乎没影响。
-export function shouldRunTickNow(env, scheduledTime = Date.now()) {
-    const raw = env?.PROACTIVE_TICK_MINUTES
-        ?? (typeof process !== 'undefined' ? process.env?.PROACTIVE_TICK_MINUTES : undefined);
-    const n = Math.floor(Number(raw));
-    if (!Number.isFinite(n) || n <= 1) return true;
+//    实际几分钟检测一次见 tickConfig.js（环境变量 > App 设置页写的 KV > 默认 5 分钟），
+//    其余分钟直接跳过（只读一次缓存过的配置，零写入）。
+export async function shouldRunTickNow(env, scheduledTime = Date.now()) {
+    let n = DEFAULT_TICK_MINUTES;
+    try { n = await readTickMinutes(env, await createKvStore(env), { useCache: true }); } catch { /* 用默认 */ }
+    if (n <= 1) return true;
     const minuteOfEpoch = Math.floor(Number(scheduledTime) / 60_000);
     return minuteOfEpoch % n === 0;
 }
 
 export async function runProactiveTick(env) {
+    // 本轮代表几分钟（随机「突然想到你」的每轮概率要按检测间隔放大，否则间隔调大后主动频率跟着变低）
+    let tickMinutes = DEFAULT_TICK_MINUTES;
+    try { tickMinutes = await readTickMinutes(env, await createKvStore(env), { useCache: true }); } catch { /* 用默认 */ }
     const proactive = await createProactiveStore(env);
     const outbox = await createOutboxStore(env);
     const sub = await createSubStore(env);
@@ -170,6 +173,7 @@ export async function runProactiveTick(env) {
                     unansweredStreak: (rec.lifeState && rec.lifeState.unansweredStreak) || 0,
                     proactiveEnabledAt: rec.proactiveEnabledAt || 0,
                     proactiveBias: rec.proactiveBias || 0,
+                    tickMs: tickMinutes * 60_000,
                     userActiveAt: 0, // 设备专属信号，后端默认 0
                     charUtcOffsetSeconds: rec.charUtcOffsetSeconds ?? null,
                     // 🕒 用户设备时区(秒)：非异地时用它算小时，绝不退回服务器时区。

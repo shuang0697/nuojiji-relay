@@ -34,7 +34,7 @@ import { runProactiveTick, shouldRunTickNow } from './src/proactive/tick.js';
 let _ticking = false;
 cron.schedule('* * * * *', async () => {
     if (_ticking) return; // 防上一轮没跑完又进
-    if (!shouldRunTickNow({})) return; // PROACTIVE_TICK_MINUTES=N → 每 N 分钟一轮
+    if (!(await shouldRunTickNow({}))) return; // 检测间隔：环境变量 > App 设置 > 默认 5 分钟
     _ticking = true;
     try {
         const r = await runProactiveTick({}); // Node：env 空对象 → store 走 memory/sqlite

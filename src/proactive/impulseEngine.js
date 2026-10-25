@@ -83,6 +83,7 @@ export function calculateImpulse({
     profile, lifeState, now, lastInteractionAt, scheduleCtx, intensity,
     unansweredStreak = 0, proactiveEnabledAt = 0, proactiveBias = 0,
     userActiveAt = 0, charUtcOffsetSeconds = null, userUtcOffsetSeconds = null,
+    tickMs = 60 * 1000,
 }) {
     const p = profile || DEFAULT_PROFILE;
     const w = p.weights || {};
@@ -159,9 +160,9 @@ export function calculateImpulse({
     factors.pendingQuestion = pendingQuestion ? 1 : 0;
     if (pendingQuestion) score += (w.pendingQuestion || 0);
 
-    // 5. 随机「突然想到你」—— 后端 tick 频率与手机端一致按 60s 估算
+    // 5. 随机「突然想到你」—— 每轮概率按本轮代表的时长（检测间隔，默认 60s）估算
     const rndChancePerDay = p.randomLifeChancePerDay || 0;
-    const TICK_MS = 60 * 1000;
+    const TICK_MS = Number(tickMs) > 0 ? Number(tickMs) : 60 * 1000;
     const WAKING_MS_PER_DAY = 16 * 3600 * 1000;
     if (rndChancePerDay > 0 && !isQuietHour(hour, p.quietHours)) {
         const pTick = rndChancePerDay * TICK_MS / WAKING_MS_PER_DAY;

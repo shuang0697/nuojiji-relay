@@ -11,10 +11,10 @@ export default {
     fetch: app.fetch,
     // Phase 2：定时主动生成。wrangler.toml [triggers] crons 配置触发频率。
     async scheduled(event, env, ctx) {
-        // PROACTIVE_TICK_MINUTES=N → 每 N 分钟才真跑一轮，其余分钟直接返回（省 KV 额度）。
-        if (!shouldRunTickNow(env, event?.scheduledTime)) return;
-        ctx.waitUntil(
-            runProactiveTick(env).catch((e) => console.error('[scheduled] proactive tick failed:', e?.message))
-        );
+        // 检测间隔（App 设置 / PROACTIVE_TICK_MINUTES，默认 5 分钟）没到就直接返回（省 KV 额度）。
+        ctx.waitUntil((async () => {
+            if (!(await shouldRunTickNow(env, event?.scheduledTime))) return;
+            await runProactiveTick(env);
+        })().catch((e) => console.error('[scheduled] proactive tick failed:', e?.message)));
     },
 };
